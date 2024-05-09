@@ -1,40 +1,79 @@
 //! Tohle je program vytvořený v Rustu na základě kurzu
 
-use slug::slugify;
-use std::{env, io};
+use csv::ReaderBuilder;
+use std::error::Error;
+use std::io::{self, Read};
 
 fn main() {
-    println!("Zadejte vstup: ");
-
-    let mut input: String = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read line");
-
-    input = input.trim().to_string();
-
-    let args: Vec<String> = env::args().collect();
-
+    let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        println!("Input: {input}");
+        eprintln!("Error: No operation specified");
         return;
     }
 
-    println!("Args: {}", args[1]);
+    let operation = &args[1];
 
-    if args[1] == "lowercase" {
-        input = input.to_lowercase();
-    } else if args[1] == "uppercase" {
-        input = input.to_uppercase();
-    } else if args[1] == "no-spaces" {
-        input = input.replace(" ", "");
-    } else if args[1] == "slugify" {
-        input = slugify(&input);
-    } else if args[1] == "reverse" {
-        input = input.chars().rev().collect();
-    } else if args[1] == "snake_case" {
-        input = input.to_lowercase().replace(" ", "_");
+    let mut input = String::new();
+    println!("Zadejte víceřádkový vstup (Ctrl+D pro ukončení):");
+    if io::stdin().read_to_string(&mut input).is_err() {
+        eprintln!("Failed to read input");
+        return;
     }
 
-    println!("Input: {input}");
+    let result = match operation.as_str() {
+        "lowercase" => lowercase(&input),
+        "uppercase" => uppercase(&input),
+        "no-spaces" => no_spaces(&input),
+        "slugify" => slugify(&input),
+        "reverse" => reverse(&input),
+        "snake_case" => snake_case(&input),
+        "csv" => csv(&input),
+        _ => {
+            eprintln!("Error: Invalid operation");
+            return;
+        }
+    };
+
+    match result {
+        Ok(output) => println!("{}", output),
+        Err(e) => eprintln!("Error: {}", e),
+    }
+}
+
+fn lowercase(input: &str) -> Result<String, Box<dyn Error>> {
+    Ok(input.to_lowercase())
+}
+
+fn uppercase(input: &str) -> Result<String, Box<dyn Error>> {
+    Ok(input.to_uppercase())
+}
+
+fn no_spaces(input: &str) -> Result<String, Box<dyn Error>> {
+    Ok(input.replace(" ", ""))
+}
+
+fn slugify(input: &String) -> Result<String, Box<dyn Error>> {
+    Ok(slug::slugify(input))
+}
+
+fn reverse(input: &str) -> Result<String, Box<dyn Error>> {
+    Ok(input.chars().rev().collect())
+}
+
+fn snake_case(input: &str) -> Result<String, Box<dyn Error>> {
+    Ok(input.to_lowercase().replace(" ", "_"))
+}
+
+fn csv(input: &str) -> Result<String, Box<dyn Error>> {
+    let mut rdr = ReaderBuilder::new().from_reader(input.as_bytes());
+    let headers = rdr.headers()?.clone();
+    let mut table = String::new();
+    for record in rdr.records() {
+        let record = record?;
+        for (_header, field) in headers.iter().zip(record.iter()) {
+            table.push_str(&format!("{:<20}", field)); // Přidáno zobrazení hlaviček
+        }
+        table.push('\n');
+    }
+    Ok(table)
 }
