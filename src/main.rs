@@ -3,8 +3,10 @@
 use csv::ReaderBuilder;
 use std::error::Error;
 use std::io::{self, Read};
+use std::sync::mpsc;
+use std::thread;
 
-fn main() {
+/*fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("Error: No operation specified");
@@ -37,6 +39,45 @@ fn main() {
     match result {
         Ok(output) => println!("{}", output),
         Err(e) => eprintln!("Error: {}", e),
+    }
+}*/
+
+fn main() {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || loop {
+        println!("Zadejte vstup ve formátu <příkaz> <text> (Ctrl+D pro ukončení psaní)");
+        let mut input = String::new();
+        if io::stdin().read_to_string(&mut input).is_err() {
+            eprintln!("Failed to read input");
+        }
+        tx.send(input).unwrap();
+    });
+
+    loop {
+        let user_input = rx.recv().unwrap();
+        let mut parts = user_input.split(" ").collect::<Vec<&str>>();
+        let operation = parts.remove(0);
+        let input = parts.join(" ");
+
+        let result = match operation {
+            "lowercase" => lowercase(&input),
+            "uppercase" => uppercase(&input),
+            "no-spaces" => no_spaces(&input),
+            "slugify" => slugify(&input),
+            "reverse" => reverse(&input),
+            "snake_case" => snake_case(&input),
+            "csv" => csv(&input),
+            _ => {
+                eprintln!("Error: Invalid operation");
+                continue;
+            }
+        };
+
+        match result {
+            Ok(output) => println!("{}", output),
+            Err(e) => eprintln!("Error: {}", e),
+        }
     }
 }
 
