@@ -27,9 +27,11 @@ fn serialize_message(message: &MessageType) -> Vec<u8> {
     bincode::serialize(&message).unwrap()
 }
 
+/*
 fn deserialize_message(data: &[u8]) -> MessageType {
     bincode::deserialize(&data).unwrap()
 }
+*/
 
 fn send_message(address: &str, message: &MessageType) {
     let serialized = serialize_message(message);

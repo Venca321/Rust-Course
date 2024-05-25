@@ -4,6 +4,7 @@ use bincode;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::net::{TcpListener, TcpStream};
 
@@ -24,12 +25,25 @@ enum MessageType {
     File(String, Vec<u8>),
 }
 
+/*
 fn serialize_message(message: &MessageType) -> Vec<u8> {
     bincode::serialize(&message).unwrap()
 }
+*/
 
 fn deserialize_message(data: &[u8]) -> MessageType {
     bincode::deserialize(&data).unwrap()
+}
+
+fn handle_client(mut stream: TcpStream) -> MessageType {
+    let mut len_bytes = [0u8; 4];
+    stream.read_exact(&mut len_bytes).unwrap();
+    let len = u32::from_be_bytes(len_bytes) as usize;
+
+    let mut buffer = vec![0u8; len];
+    stream.read_exact(&mut buffer).unwrap();
+
+    deserialize_message(&buffer)
 }
 
 fn listen_and_accept(address: &str) {
@@ -44,9 +58,8 @@ fn listen_and_accept(address: &str) {
 
         println!("Connection from: {}", addr);
 
-        //let message = handle_client(clients.get(&addr).unwrap().try_clone().unwrap());
-        // Here, you can further process this message as per your requirements
-        //println!("{:?}", message);
+        let message = handle_client(clients.get(&addr).unwrap().try_clone().unwrap());
+        println!("{:?}", message);
     }
 }
 
