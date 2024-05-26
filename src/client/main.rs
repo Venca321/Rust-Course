@@ -1,11 +1,13 @@
-//! Tohle je program vytvořený v Rustu na základě kurzu
-
 use bincode;
+use chrono::prelude::*;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::fs::create_dir_all;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::thread;
+use std::path::Path;
+use std::thread; // Import the create_dir_all function from the std::fs module
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -31,7 +33,6 @@ fn serialize_message(message: &MessageType) -> Vec<u8> {
 fn deserialize_message(data: &[u8]) -> MessageType {
     bincode::deserialize(&data).unwrap()
 }
-
 fn handle_message(mut stream: TcpStream) {
     let mut len_bytes = [0u8; 4];
     stream.read_exact(&mut len_bytes).unwrap();
@@ -41,7 +42,35 @@ fn handle_message(mut stream: TcpStream) {
     stream.read_exact(&mut buffer).unwrap();
 
     let message = deserialize_message(&buffer);
-    println!("Received message: {:?}", message);
+    match message {
+        MessageType::Text(text) => println!("{}", text),
+        MessageType::Image(data) => {
+            println!("Receiving image...");
+
+            let now = Utc::now();
+            let timestamp_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+
+            // Create the directory if it doesn't exist
+            create_dir_all("src/client/images").unwrap();
+
+            let mut destination_file = File::create(Path::new(&format!(
+                "src/client/images/{}.png",
+                timestamp_str
+            )))
+            .unwrap();
+            destination_file.write_all(&data).unwrap();
+        }
+        MessageType::File(filename, data) => {
+            println!("Receiving {}", filename);
+
+            // Create the directory if it doesn't exist
+            create_dir_all("src/client/files").unwrap();
+
+            let mut destination_file =
+                File::create(Path::new(&format!("src/client/files/{}", filename))).unwrap();
+            destination_file.write_all(&data).unwrap();
+        }
+    }
 }
 
 fn send_message(mut stream: TcpStream, message: &MessageType) {
@@ -68,11 +97,35 @@ fn main() {
     });
 
     loop {
+        let message: MessageType; // Declare the message variable
         let mut user_input = String::new();
         std::io::stdin().read_line(&mut user_input).unwrap();
-        let message = MessageType::Text(user_input.trim().to_string());
+        let message_str = user_input.trim().to_string();
 
-        println!("Sending message: {:?}", message);
+        if message_str.starts_with(".file") {
+            let filename = message_str.trim_start_matches(".file").trim().to_string();
+            let mut source_file = File::open(Path::new(&filename)).unwrap();
+            let mut buffer = Vec::new();
+            source_file.read_to_end(&mut buffer).unwrap();
+            message = MessageType::File(filename, buffer);
+        } else if message_str.starts_with(".image") {
+            let filename = message_str.trim_start_matches(".image").trim().to_string();
+
+            if !filename.ends_with(".png") {
+                println!("Only PNG images are supported.");
+                continue;
+            }
+
+            let mut source_file = File::open(Path::new(&filename)).unwrap();
+            let mut buffer = Vec::new();
+            source_file.read_to_end(&mut buffer).unwrap();
+            message = MessageType::Image(buffer);
+        } else if message_str.starts_with(".quit") {
+            println!("Quitting...");
+            break;
+        } else {
+            message = MessageType::Text(user_input);
+        }
 
         let send_stream = stream.try_clone().unwrap();
         send_message(send_stream, &message);
