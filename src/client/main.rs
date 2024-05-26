@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
-use std::thread; // Import the create_dir_all function from the std::fs module
+use std::thread;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -50,7 +50,6 @@ fn handle_message(mut stream: TcpStream) {
             let now = Utc::now();
             let timestamp_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
-            // Create the directory if it doesn't exist
             create_dir_all("src/client/images").unwrap();
 
             let mut destination_file = File::create(Path::new(&format!(
@@ -63,7 +62,6 @@ fn handle_message(mut stream: TcpStream) {
         MessageType::File(filename, data) => {
             println!("Receiving {}", filename);
 
-            // Create the directory if it doesn't exist
             create_dir_all("src/client/files").unwrap();
 
             let mut destination_file =
@@ -97,7 +95,7 @@ fn main() {
     });
 
     loop {
-        let message: MessageType; // Declare the message variable
+        let message: MessageType;
         let mut user_input = String::new();
         std::io::stdin().read_line(&mut user_input).unwrap();
         let message_str = user_input.trim().to_string();
