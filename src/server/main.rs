@@ -4,7 +4,7 @@ use bincode;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::net::{TcpListener, TcpStream};
 
@@ -25,11 +25,9 @@ enum MessageType {
     File(String, Vec<u8>),
 }
 
-/*
 fn serialize_message(message: &MessageType) -> Vec<u8> {
     bincode::serialize(&message).unwrap()
 }
-*/
 
 fn deserialize_message(data: &[u8]) -> MessageType {
     bincode::deserialize(&data).unwrap()
@@ -56,17 +54,34 @@ fn listen_and_accept(address: &str) {
         let addr = stream.peer_addr().unwrap();
         clients.insert(addr.clone(), stream);
 
-        println!("Connection from: {}", addr);
+        println!("Connected clients: {}", clients.len());
 
         let message = handle_client(clients.get(&addr).unwrap().try_clone().unwrap());
-        println!("{:?}", message);
+
+        // Send the message to all clients except the sender
+        for (client_addr, client_stream) in &clients {
+            if client_addr != &addr {
+                send_message(client_stream.try_clone().unwrap(), &message);
+            }
+        }
     }
+}
+
+fn send_message(mut stream: TcpStream, message: &MessageType) {
+    let serialized = serialize_message(message);
+
+    // Send the length of the serialized message (as 4-byte value).
+    let len = serialized.len() as u32;
+    stream.write(&len.to_be_bytes()).unwrap();
+
+    // Send the serialized message.
+    stream.write_all(&serialized).unwrap();
 }
 
 fn main() {
     let args = Args::parse();
-    println!("Arguments: {:?}", args);
-
     let address = format!("{}:{}", args.ip, args.port);
+
+    println!("Listening on: {}", address);
     listen_and_accept(&address);
 }
