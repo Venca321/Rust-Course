@@ -5,13 +5,14 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::SocketAddr;
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value = "localhost")]
+    #[arg(short, long, default_value = "127.0.0.1")] //localhost is not working
     ip: String,
 
     #[arg(short, long, default_value = "11111")]
@@ -46,24 +47,31 @@ fn handle_client(mut stream: TcpStream) -> MessageType {
 
 fn listen_and_accept(address: &str) {
     let listener = TcpListener::bind(address).unwrap();
-
-    let mut clients: HashMap<SocketAddr, TcpStream> = HashMap::new();
+    let clients = Arc::new(Mutex::new(HashMap::new()));
 
     for stream in listener.incoming() {
         let stream = stream.unwrap();
         let addr = stream.peer_addr().unwrap();
-        clients.insert(addr.clone(), stream);
+        let clients = Arc::clone(&clients);
 
-        println!("Connected clients: {}", clients.len());
-
-        let message = handle_client(clients.get(&addr).unwrap().try_clone().unwrap());
-
-        // Send the message to all clients except the sender
-        for (client_addr, client_stream) in &clients {
-            if client_addr != &addr {
-                send_message(client_stream.try_clone().unwrap(), &message);
-            }
+        {
+            let mut clients_guard = clients.lock().unwrap();
+            clients_guard.insert(addr.clone(), stream.try_clone().unwrap());
+            println!("Connected clients: {}", clients_guard.len());
         }
+
+        thread::spawn(move || loop {
+            let message = handle_client(stream.try_clone().unwrap());
+            println!("Received message: {:?}", message);
+
+            let clients_guard = clients.lock().unwrap();
+            for (client_addr, client_stream) in clients_guard.iter() {
+                if client_addr != &addr {
+                    println!("Sending message to: {}", client_addr);
+                    send_message(client_stream.try_clone().unwrap(), &message);
+                }
+            }
+        });
     }
 }
 

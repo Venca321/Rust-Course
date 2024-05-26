@@ -10,7 +10,7 @@ use std::thread;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value = "localhost")]
+    #[arg(short, long, default_value = "127.0.0.1")] //localhost is not working
     ip: String,
 
     #[arg(short, long, default_value = "11111")]
@@ -61,17 +61,20 @@ fn main() {
 
     let address = format!("{}:{}", args.ip, args.port);
     let stream = TcpStream::connect(address).unwrap();
-    let recv_stream = stream.try_clone().unwrap();
 
-    thread::spawn(move || {
-        handle_message(recv_stream); // Use the cloned stream
+    let recv_stream = stream.try_clone().unwrap();
+    thread::spawn(move || loop {
+        handle_message(recv_stream.try_clone().unwrap());
     });
 
     loop {
         let mut user_input = String::new();
         std::io::stdin().read_line(&mut user_input).unwrap();
         let message = MessageType::Text(user_input.trim().to_string());
+
         println!("Sending message: {:?}", message);
-        send_message(stream.try_clone().unwrap(), &message);
+
+        let send_stream = stream.try_clone().unwrap();
+        send_message(send_stream, &message);
     }
 }
