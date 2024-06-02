@@ -1,8 +1,7 @@
 //! Tohle je program vytvořený v Rustu na základě kurzu
 
-use bincode;
 use clap::Parser;
-use serde::{Deserialize, Serialize};
+use shared::{deserialize_message, serialize_message, MessageType};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -17,21 +16,6 @@ struct Args {
 
     #[arg(short, long, default_value = "11111")]
     port: u16,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-enum MessageType {
-    Text(String),
-    Image(Vec<u8>),
-    File(String, Vec<u8>),
-}
-
-fn serialize_message(message: &MessageType) -> Vec<u8> {
-    bincode::serialize(&message).unwrap()
-}
-
-fn deserialize_message(data: &[u8]) -> MessageType {
-    bincode::deserialize(&data).unwrap()
 }
 
 fn handle_client(mut stream: TcpStream) -> MessageType {

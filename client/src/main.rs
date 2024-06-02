@@ -1,7 +1,6 @@
-use bincode;
 use chrono::prelude::*;
 use clap::Parser;
-use serde::{Deserialize, Serialize};
+use shared::{deserialize_message, serialize_message, MessageType};
 use std::fs::create_dir_all;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -19,20 +18,6 @@ struct Args {
     port: u16,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-enum MessageType {
-    Text(String),
-    Image(Vec<u8>),
-    File(String, Vec<u8>),
-}
-
-fn serialize_message(message: &MessageType) -> Vec<u8> {
-    bincode::serialize(&message).unwrap()
-}
-
-fn deserialize_message(data: &[u8]) -> MessageType {
-    bincode::deserialize(&data).unwrap()
-}
 fn handle_message(mut stream: TcpStream) {
     let mut len_bytes = [0u8; 4];
     stream.read_exact(&mut len_bytes).unwrap();
