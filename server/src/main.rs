@@ -1,41 +1,62 @@
-//! Tohle je program vytvořený v Rustu na základě kurzu
-
 use clap::Parser;
 use shared::{deserialize_message, serialize_message, MessageType};
 use std::collections::HashMap;
+use std::io;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+/// Struktura pro uchovávání argumentů příkazové řádky
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value = "127.0.0.1")] //localhost is not working
+    /// IP adresa serveru
+    #[arg(short, long, default_value = "127.0.0.1")]
     ip: String,
 
+    /// Port serveru
     #[arg(short, long, default_value = "11111")]
     port: u16,
 }
 
-fn handle_client(mut stream: TcpStream) -> MessageType {
+/// Funkce pro zpracování klientského spojení
+fn handle_client(mut stream: TcpStream) -> Result<MessageType, io::Error> {
+    // Načtení délky zprávy (4 bajty)
     let mut len_bytes = [0u8; 4];
-    stream.read_exact(&mut len_bytes).unwrap();
+    stream.read_exact(&mut len_bytes)?;
     let len = u32::from_be_bytes(len_bytes) as usize;
 
+    // Načtení samotné zprávy podle délky
     let mut buffer = vec![0u8; len];
-    stream.read_exact(&mut buffer).unwrap();
+    stream.read_exact(&mut buffer)?;
 
-    deserialize_message(&buffer)
+    // Deserializace zprávy
+    Ok(deserialize_message(&buffer))
 }
 
+/// Funkce pro poslech a přijímání spojení na dané adrese
 fn listen_and_accept(address: &str) {
-    let listener = TcpListener::bind(address).unwrap();
+    // Vytvoření TcpListeneru pro danou adresu
+    let listener = match TcpListener::bind(address) {
+        Ok(lis) => lis,
+        Err(_) => {
+            println!("Could not start a server!");
+            return;
+        }
+    };
+    // Sdílená mapa pro uchovávání připojených klientů
     let clients = Arc::new(Mutex::new(HashMap::new()));
 
     for stream in listener.incoming() {
-        let stream = stream.unwrap();
-        let addr = stream.peer_addr().unwrap();
+        let stream = match stream {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let addr = match stream.peer_addr() {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
         let clients = Arc::clone(&clients);
 
         {
@@ -44,8 +65,15 @@ fn listen_and_accept(address: &str) {
             println!("Connected clients: {}", clients_guard.len());
         }
 
+        // Spuštění nového vlákna pro každého klienta
         thread::spawn(move || loop {
-            let message = handle_client(stream.try_clone().unwrap());
+            let message = match handle_client(stream.try_clone().unwrap()) {
+                Ok(message) => message,
+                Err(err) => {
+                    println!("Could not read message: {:?}", err);
+                    break;
+                }
+            };
             println!("Received message: {:?}", message);
 
             let clients_guard = clients.lock().unwrap();
@@ -59,18 +87,25 @@ fn listen_and_accept(address: &str) {
     }
 }
 
+/// Funkce pro odesílání zprávy klientovi
 fn send_message(mut stream: TcpStream, message: &MessageType) {
     let serialized = serialize_message(message);
 
-    // Send the length of the serialized message (as 4-byte value).
+    // Odeslání délky serializované zprávy (4 bajty)
     let len = serialized.len() as u32;
-    stream.write(&len.to_be_bytes()).unwrap();
+    if stream.write(&len.to_be_bytes()).is_err() {
+        println!("Could not send message length.");
+        return;
+    }
 
-    // Send the serialized message.
-    stream.write_all(&serialized).unwrap();
+    // Odeslání samotné serializované zprávy
+    if stream.write_all(&serialized).is_err() {
+        println!("Could not send message.");
+    }
 }
 
 fn main() {
+    // Parsování argumentů příkazové řádky
     let args = Args::parse();
     let address = format!("{}:{}", args.ip, args.port);
 
