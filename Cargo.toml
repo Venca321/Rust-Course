@@ -1,18 +1,3 @@
-[package]
-name = "rust_course"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-
-[[bin]]
-name = "client"
-path = "client/src/main.rs"
-
-[[bin]]
-name = "server"
-path = "server/src/main.rs"
-
 [workspace]
 members = [
     "client",
