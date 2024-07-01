@@ -26,16 +26,15 @@ struct Args {
 async fn handle_message(mut reader: tokio::net::tcp::OwnedReadHalf) -> Result<(), ClientError> {
     loop {
         let mut len_bytes = [0u8; 4];
-        if let Err(e) = reader.read_exact(&mut len_bytes).await {
-            println!("Error reading message length: {:?}", e);
+        if reader.read_exact(&mut len_bytes).await.is_err() {
+            println!("Connection closed by server");
             break;
         }
         let len = u32::from_be_bytes(len_bytes) as usize;
-        println!("Message length: {}", len);
 
         let mut buffer = vec![0u8; len];
-        if let Err(e) = reader.read_exact(&mut buffer).await {
-            println!("Error reading message buffer: {:?}", e);
+        if reader.read_exact(&mut buffer).await.is_err() {
+            println!("Connection closed by server");
             break;
         }
 
@@ -46,7 +45,6 @@ async fn handle_message(mut reader: tokio::net::tcp::OwnedReadHalf) -> Result<()
                 continue;
             }
         };
-        println!("Received message: {:?}", message);
 
         match message {
             MessageType::Text(text) => println!("Received: {}", text),
@@ -80,19 +78,11 @@ async fn send_message(
     let stream_lock = timeout(Duration::from_secs(5), writer.lock()).await;
     match stream_lock {
         Ok(mut writer) => {
-            println!("Acquired lock for sending message.");
-
             let serialized = serialize_message(message).map_err(ClientError::from)?;
-            println!("Serialized message: {:?}", serialized);
 
             let len = serialized.len() as u32;
-            println!("Writing length: {}", len);
-
             writer.write(&len.to_be_bytes()).await?;
-            println!("Wrote length: {}", len);
-
             writer.write_all(&serialized).await?;
-            println!("Wrote message data.");
         }
         Err(_) => {
             println!("Timeout while waiting for lock.");
@@ -113,24 +103,42 @@ async fn main() -> Result<(), ClientError> {
     println!("Arguments: {:?}", args);
 
     let stream = TcpStream::connect(&address).await?;
-    let (reader, writer) = stream.into_split();
+    let (mut reader, writer) = stream.into_split();
 
     let writer = Arc::new(Mutex::new(writer));
 
+    // Poslání autentizačního tokenu
+    {
+        let mut writer = writer.lock().await;
+        let token = b"SECRET_TOKEN";
+        let len = token.len() as u32;
+        writer.write(&len.to_be_bytes()).await?;
+        writer.write_all(token).await?;
+
+        let mut response_len_bytes = [0u8; 4];
+        reader.read_exact(&mut response_len_bytes).await?;
+        let response_len = u32::from_be_bytes(response_len_bytes) as usize;
+        let mut response = vec![0u8; response_len];
+        reader.read_exact(&mut response).await?;
+        let response_str = String::from_utf8_lossy(&response);
+        println!("Server response: {}", response_str);
+
+        if !response_str.contains("Authentication Successful") {
+            println!("Authentication failed.");
+            return Ok(());
+        }
+    }
+
     let (sender, mut receiver) = mpsc::channel::<MessageType>(32);
 
-    {
-        let writer = Arc::clone(&writer);
-        task::spawn(async move {
-            while let Some(message) = receiver.recv().await {
-                println!("Sending message: {:?}", message);
-                if let Err(e) = send_message(writer.clone(), &message).await {
-                    println!("Error sending message: {:?}", e);
-                }
-                println!("Message sent.");
+    let writer_clone = Arc::clone(&writer);
+    task::spawn(async move {
+        while let Some(message) = receiver.recv().await {
+            if let Err(e) = send_message(writer_clone.clone(), &message).await {
+                println!("Error sending message: {:?}", e);
             }
-        });
-    }
+        }
+    });
 
     task::spawn(async move {
         if let Err(e) = handle_message(reader).await {

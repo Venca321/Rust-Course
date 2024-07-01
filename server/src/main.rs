@@ -21,11 +21,39 @@ struct Args {
 
 async fn handle_client(
     reader: Arc<Mutex<tokio::net::tcp::OwnedReadHalf>>,
+    writer: Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
     sender: mpsc::Sender<(MessageType, std::net::SocketAddr)>,
     addr: std::net::SocketAddr,
 ) -> Result<(), ServerError> {
-    let mut reader = reader.lock().await;
+    // Ověření klienta
+    {
+        let mut reader = reader.lock().await;
+        let mut writer = writer.lock().await;
+        let mut len_bytes = [0u8; 4];
+        reader.read_exact(&mut len_bytes).await?;
+        let len = u32::from_be_bytes(len_bytes) as usize;
+
+        let mut buffer = vec![0u8; len];
+        reader.read_exact(&mut buffer).await?;
+        let token = String::from_utf8(buffer)
+            .map_err(|_| ServerError::Other("Invalid token format".to_string()))?;
+
+        if token != "SECRET_TOKEN" {
+            // Zde ověřujeme token
+            writer.write_all(&4u32.to_be_bytes()).await?;
+            writer.write_all(b"FAIL").await?;
+            return Err(ServerError::Other("Authentication failed".to_string()));
+        }
+
+        let serialized = b"Authentication Successful";
+        let len = serialized.len() as u32;
+        writer.write(&len.to_be_bytes()).await?;
+        writer.write_all(serialized).await?;
+    }
+
+    // Pokračování standardní komunikace
     loop {
+        let mut reader = reader.lock().await;
         let mut len_bytes = [0u8; 4];
         if reader.read_exact(&mut len_bytes).await.is_err() {
             break; // Connection closed
@@ -65,16 +93,14 @@ async fn listen_and_accept(address: &str) -> Result<(), ServerError> {
     let clients_clone = Arc::clone(&clients);
     task::spawn(async move {
         while let Some((message, sender_addr)) = message_receiver.recv().await {
-            println!("Received message: {:?}", message);
+            println!("Received message from {}: {:?}", sender_addr, message);
             let clients = clients_clone.lock().await;
             for (client_addr, (_client_reader, client_writer)) in clients.iter() {
                 if client_addr != &sender_addr {
-                    println!("Sending message to: {}", client_addr);
                     let mut writer = client_writer.lock().await;
                     if let Err(e) = send_message(&mut writer, &message).await {
-                        println!("Error sending message: {:?}", e);
+                        println!("Error sending message to {}: {:?}", client_addr, e);
                     }
-                    println!("Message sent");
                 }
             }
         }
@@ -95,8 +121,11 @@ async fn listen_and_accept(address: &str) -> Result<(), ServerError> {
         }
 
         let client_reader = Arc::clone(&clients.lock().await.get(&addr).unwrap().0);
+        let client_writer = Arc::clone(&clients.lock().await.get(&addr).unwrap().1);
         task::spawn(async move {
-            if let Err(err) = handle_client(client_reader, message_sender, addr).await {
+            if let Err(err) =
+                handle_client(client_reader, client_writer, message_sender, addr).await
+            {
                 println!("Error handling client {}: {:?}", addr, err);
                 clients.lock().await.remove(&addr);
             }
