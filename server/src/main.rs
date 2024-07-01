@@ -5,7 +5,7 @@ use shared::{deserialize_message, serialize_message, MessageType};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task;
 
@@ -19,80 +19,100 @@ struct Args {
     port: u16,
 }
 
-async fn handle_client(stream: Arc<Mutex<TcpStream>>) -> Result<MessageType, ServerError> {
-    let mut stream = stream.lock().await;
-    let mut len_bytes = [0u8; 4];
-    stream.read_exact(&mut len_bytes).await?;
-    let len = u32::from_be_bytes(len_bytes) as usize;
+async fn handle_client(
+    reader: Arc<Mutex<tokio::net::tcp::OwnedReadHalf>>,
+    sender: mpsc::Sender<(MessageType, std::net::SocketAddr)>,
+    addr: std::net::SocketAddr,
+) -> Result<(), ServerError> {
+    let mut reader = reader.lock().await;
+    loop {
+        let mut len_bytes = [0u8; 4];
+        if reader.read_exact(&mut len_bytes).await.is_err() {
+            break; // Connection closed
+        }
+        let len = u32::from_be_bytes(len_bytes) as usize;
 
-    let mut buffer = vec![0u8; len];
-    stream.read_exact(&mut buffer).await?;
+        let mut buffer = vec![0u8; len];
+        if reader.read_exact(&mut buffer).await.is_err() {
+            break; // Connection closed
+        }
 
-    deserialize_message(&buffer).map_err(ServerError::from)
+        let message = deserialize_message(&buffer).map_err(ServerError::from)?;
+        sender
+            .send((message, addr))
+            .await
+            .map_err(|e| ServerError::Other(e.to_string()))?;
+    }
+    Ok(())
 }
 
 async fn listen_and_accept(address: &str) -> Result<(), ServerError> {
     let listener = TcpListener::bind(address).await?;
+    let clients: Arc<
+        Mutex<
+            HashMap<
+                std::net::SocketAddr,
+                (
+                    Arc<Mutex<tokio::net::tcp::OwnedReadHalf>>,
+                    Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+                ),
+            >,
+        >,
+    > = Arc::new(Mutex::new(HashMap::new()));
+    let (message_sender, mut message_receiver) =
+        mpsc::channel::<(MessageType, std::net::SocketAddr)>(32);
 
-    let clients = Arc::new(Mutex::new(HashMap::new()));
+    let clients_clone = Arc::clone(&clients);
+    task::spawn(async move {
+        while let Some((message, sender_addr)) = message_receiver.recv().await {
+            println!("Received message: {:?}", message);
+            let clients = clients_clone.lock().await;
+            for (client_addr, (_client_reader, client_writer)) in clients.iter() {
+                if client_addr != &sender_addr {
+                    println!("Sending message to: {}", client_addr);
+                    let mut writer = client_writer.lock().await;
+                    if let Err(e) = send_message(&mut writer, &message).await {
+                        println!("Error sending message: {:?}", e);
+                    }
+                    println!("Message sent");
+                }
+            }
+        }
+    });
 
     loop {
         let (stream, addr) = listener.accept().await?;
+        let (reader, writer) = stream.into_split();
         let clients = Arc::clone(&clients);
-        let stream = Arc::new(Mutex::new(stream));
-
+        let message_sender = message_sender.clone();
         {
             let mut clients_guard = clients.lock().await;
-            clients_guard.insert(addr, Arc::clone(&stream));
+            clients_guard.insert(
+                addr,
+                (Arc::new(Mutex::new(reader)), Arc::new(Mutex::new(writer))),
+            );
             println!("Connected clients: {}", clients_guard.len());
         }
 
-        let (sender, mut receiver) = mpsc::channel::<MessageType>(32);
-        let recv_stream = Arc::clone(&stream);
-
+        let client_reader = Arc::clone(&clients.lock().await.get(&addr).unwrap().0);
         task::spawn(async move {
-            while let Some(message) = receiver.recv().await {
-                let clients_guard = clients.lock().await;
-                for (client_addr, client_stream) in clients_guard.iter() {
-                    if client_addr != &addr {
-                        println!("Sending message to: {}", client_addr);
-                        if let Err(e) = send_message(client_stream.clone(), &message).await {
-                            println!("Error sending message: {:?}", e);
-                        }
-                    }
-                }
-            }
-        });
-
-        task::spawn(async move {
-            loop {
-                match handle_client(Arc::clone(&recv_stream)).await {
-                    Ok(message) => {
-                        println!("Received message: {:?}", message);
-                        if let Err(e) = sender.send(message).await {
-                            println!("Error sending to channel: {:?}", e);
-                        }
-                    }
-                    Err(err) => {
-                        println!("Error handling client: {:?}", err);
-                        break;
-                    }
-                }
+            if let Err(err) = handle_client(client_reader, message_sender, addr).await {
+                println!("Error handling client {}: {:?}", addr, err);
+                clients.lock().await.remove(&addr);
             }
         });
     }
 }
 
 async fn send_message(
-    stream: Arc<Mutex<TcpStream>>,
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
     message: &MessageType,
 ) -> Result<(), ServerError> {
-    let mut stream = stream.lock().await;
     let serialized = serialize_message(message).map_err(ServerError::from)?;
 
     let len = serialized.len() as u32;
-    stream.write(&len.to_be_bytes()).await?;
-    stream.write_all(&serialized).await?;
+    writer.write(&len.to_be_bytes()).await?;
+    writer.write_all(&serialized).await?;
 
     Ok(())
 }
