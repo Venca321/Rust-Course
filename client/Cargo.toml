@@ -9,3 +9,6 @@ clap = { version = "4.0", features = ["derive"] }
 shared = { path = "../shared" }
 anyhow = "1.0"
 tokio = { version = "1.38", features = ["full"] }
+
+[build-dependencies]
+syn = { version = "1.0", features = ["full", "derive"] }

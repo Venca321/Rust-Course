@@ -1,5 +1,4 @@
 use anyhow::Result;
-use chrono::prelude::*;
 use clap::Parser;
 use shared::client_error::ClientError;
 use shared::{deserialize_message, serialize_message, MessageType};
@@ -51,7 +50,7 @@ async fn handle_message(mut reader: tokio::net::tcp::OwnedReadHalf) -> Result<()
             MessageType::Image(data) => {
                 println!("Receiving image...");
 
-                let now = Utc::now();
+                let now = chrono::Utc::now();
                 let timestamp_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
                 create_dir_all("images")?;

@@ -1,7 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
+use dotenv::dotenv;
 use shared::server_error::ServerError;
 use shared::{deserialize_message, serialize_message, MessageType};
+use sqlx::sqlite::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -17,6 +19,9 @@ struct Args {
 
     #[arg(short, long, default_value = "11111")]
     port: u16,
+
+    #[arg(short, long, default_value = "sqlite:chat.db")]
+    database_url: String,
 }
 
 async fn handle_client(
@@ -24,6 +29,7 @@ async fn handle_client(
     writer: Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
     sender: mpsc::Sender<(MessageType, std::net::SocketAddr)>,
     addr: std::net::SocketAddr,
+    _pool: SqlitePool,
 ) -> Result<(), ServerError> {
     // Ověření klienta
     {
@@ -74,7 +80,7 @@ async fn handle_client(
     Ok(())
 }
 
-async fn listen_and_accept(address: &str) -> Result<(), ServerError> {
+async fn listen_and_accept(address: &str, pool: SqlitePool) -> Result<(), ServerError> {
     let listener = TcpListener::bind(address).await?;
     let clients: Arc<
         Mutex<
@@ -122,9 +128,10 @@ async fn listen_and_accept(address: &str) -> Result<(), ServerError> {
 
         let client_reader = Arc::clone(&clients.lock().await.get(&addr).unwrap().0);
         let client_writer = Arc::clone(&clients.lock().await.get(&addr).unwrap().1);
+        let pool = pool.clone();
         task::spawn(async move {
             if let Err(err) =
-                handle_client(client_reader, client_writer, message_sender, addr).await
+                handle_client(client_reader, client_writer, message_sender, addr, pool).await
             {
                 println!("Error handling client {}: {:?}", addr, err);
                 clients.lock().await.remove(&addr);
@@ -146,13 +153,38 @@ async fn send_message(
     Ok(())
 }
 
+async fn init_db(pool: &SqlitePool) -> Result<(), ServerError> {
+    sqlx::query(
+        "
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            content TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        ",
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), ServerError> {
+    dotenv().ok();
     let args = Args::parse();
     let address = format!("{}:{}", args.ip, args.port);
 
+    let pool = SqlitePool::connect(&args.database_url).await?;
+    init_db(&pool).await?;
+
     println!("Listening on: {}", address);
-    listen_and_accept(&address).await?;
+    listen_and_accept(&address, pool).await?;
 
     Ok(())
 }
