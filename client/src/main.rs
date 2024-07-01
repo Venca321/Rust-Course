@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task;
 use tokio::time::{timeout, Duration};
 
+/// Struktura pro uchování argumentů příkazového řádku
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -22,7 +23,12 @@ struct Args {
     port: u16,
 }
 
-async fn handle_message(mut reader: tokio::net::tcp::OwnedReadHalf) -> Result<(), ClientError> {
+/// Funkce pro zpracování přijatých zpráv od serveru
+///
+/// # Arguments
+///
+/// * `reader` - Asynchronní čtecí část TCP spojení
+async fn handle_message(mut reader: tokio::io::ReadHalf<TcpStream>) -> Result<(), ClientError> {
     loop {
         let mut len_bytes = [0u8; 4];
         if reader.read_exact(&mut len_bytes).await.is_err() {
@@ -70,8 +76,14 @@ async fn handle_message(mut reader: tokio::net::tcp::OwnedReadHalf) -> Result<()
     Ok(())
 }
 
+/// Funkce pro odesílání zpráv na server
+///
+/// # Arguments
+///
+/// * `writer` - Asynchronní zapisovací část TCP spojení
+/// * `message` - Typ zprávy k odeslání
 async fn send_message(
-    writer: Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    writer: Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
     message: &MessageType,
 ) -> Result<(), ClientError> {
     let stream_lock = timeout(Duration::from_secs(5), writer.lock()).await;
@@ -102,7 +114,7 @@ async fn main() -> Result<(), ClientError> {
     println!("Arguments: {:?}", args);
 
     let stream = TcpStream::connect(&address).await?;
-    let (mut reader, writer) = stream.into_split();
+    let (mut reader, writer) = tokio::io::split(stream);
 
     let writer = Arc::new(Mutex::new(writer));
 
@@ -180,4 +192,69 @@ async fn main() -> Result<(), ClientError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::net::TcpStream;
+
+    #[tokio::test]
+    async fn test_handle_message() -> Result<(), ClientError> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+
+        let server_task = tokio::spawn(async move {
+            let (mut server_socket, _) = listener.accept().await.unwrap();
+            let message = MessageType::Text("Hello".to_string());
+            let serialized = serialize_message(&message)
+                .map_err(ClientError::from)
+                .unwrap();
+            let len = serialized.len() as u32;
+            server_socket.write_all(&len.to_be_bytes()).await.unwrap();
+            server_socket.write_all(&serialized).await.unwrap();
+        });
+
+        let client_socket = TcpStream::connect(addr).await?;
+        let (reader, _writer) = tokio::io::split(client_socket);
+
+        handle_message(reader).await?;
+
+        server_task.await.unwrap();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_send_message() -> Result<(), ClientError> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+
+        let server_task = tokio::spawn(async move {
+            let (mut server_socket, _) = listener.accept().await.unwrap();
+            let mut len_bytes = [0u8; 4];
+            server_socket.read_exact(&mut len_bytes).await.unwrap();
+            let len = u32::from_be_bytes(len_bytes) as usize;
+
+            let mut buffer = vec![0u8; len];
+            server_socket.read_exact(&mut buffer).await.unwrap();
+
+            let received_message = deserialize_message(&buffer)
+                .map_err(ClientError::from)
+                .unwrap();
+            let expected_message = MessageType::Text("Hello, World!".to_string());
+            assert_eq!(expected_message, received_message);
+        });
+
+        let client_socket = TcpStream::connect(addr).await?;
+        let (_reader, writer) = tokio::io::split(client_socket);
+        let writer = Arc::new(Mutex::new(writer));
+
+        let message = MessageType::Text("Hello, World!".to_string());
+        send_message(writer, &message).await?;
+
+        server_task.await.unwrap();
+        Ok(())
+    }
 }

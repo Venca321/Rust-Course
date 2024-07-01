@@ -1,10 +1,9 @@
 use bincode;
-use serde::{Deserialize, Serialize};
 
 pub mod client_error;
 pub mod server_error;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MessageType {
     Text(String),
     Image(Vec<u8>),
