@@ -5,9 +5,12 @@ use shared::client_error::ClientError;
 use shared::{deserialize_message, serialize_message, MessageType};
 use std::fs::{create_dir_all, File};
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
 use std::path::Path;
-use std::thread;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::{mpsc, Mutex};
+use tokio::task;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -19,13 +22,14 @@ struct Args {
     port: u16,
 }
 
-fn handle_message(mut stream: TcpStream) -> Result<(), ClientError> {
+async fn handle_message(stream: Arc<Mutex<TcpStream>>) -> Result<(), ClientError> {
+    let mut stream = stream.lock().await;
     let mut len_bytes = [0u8; 4];
-    stream.read_exact(&mut len_bytes)?;
+    stream.read_exact(&mut len_bytes).await?;
     let len = u32::from_be_bytes(len_bytes) as usize;
 
     let mut buffer = vec![0u8; len];
-    stream.read_exact(&mut buffer)?;
+    stream.read_exact(&mut buffer).await?;
 
     let message = deserialize_message(&buffer).map_err(ClientError::from)?;
     match message {
@@ -53,28 +57,46 @@ fn handle_message(mut stream: TcpStream) -> Result<(), ClientError> {
     Ok(())
 }
 
-fn send_message(mut stream: TcpStream, message: &MessageType) -> Result<(), ClientError> {
+async fn send_message(
+    stream: Arc<Mutex<TcpStream>>,
+    message: &MessageType,
+) -> Result<(), ClientError> {
+    let mut stream = stream.lock().await;
     let serialized = serialize_message(message).map_err(ClientError::from)?;
 
     let len = serialized.len() as u32;
-    stream.write(&len.to_be_bytes())?;
-    stream.write_all(&serialized)?;
+    stream.write(&len.to_be_bytes()).await?;
+    stream.write_all(&serialized).await?;
 
     Ok(())
 }
 
-fn main() -> Result<(), ClientError> {
+#[tokio::main]
+async fn main() -> Result<(), ClientError> {
     let args = Args::parse();
     let address = format!("{}:{}", args.ip, args.port);
 
     println!("Arguments: {:?}", args);
 
-    let stream = TcpStream::connect(&address)?;
+    let stream = TcpStream::connect(&address).await?;
+    let stream = Arc::new(Mutex::new(stream));
 
-    let recv_stream = stream.try_clone()?;
-    thread::spawn(move || loop {
-        if let Err(e) = handle_message(recv_stream.try_clone().unwrap()) {
-            println!("Error handling message: {:?}", e);
+    let (sender, mut receiver) = mpsc::channel::<MessageType>(32);
+    let recv_stream = Arc::clone(&stream);
+
+    task::spawn(async move {
+        while let Some(message) = receiver.recv().await {
+            if let Err(e) = send_message(Arc::clone(&stream), &message).await {
+                println!("Error sending message: {:?}", e);
+            }
+        }
+    });
+
+    task::spawn(async move {
+        loop {
+            if let Err(e) = handle_message(Arc::clone(&recv_stream)).await {
+                println!("Error handling message: {:?}", e);
+            }
         }
     });
 
@@ -106,7 +128,10 @@ fn main() -> Result<(), ClientError> {
             MessageType::Text(user_input)
         };
 
-        send_message(stream.try_clone()?, &message)?;
+        sender
+            .send(message)
+            .await
+            .map_err(|e| ClientError::Other(e.to_string()))?;
     }
 
     Ok(())

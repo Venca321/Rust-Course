@@ -8,3 +8,4 @@ chrono = "0.4"
 clap = { version = "4.0", features = ["derive"] }
 shared = { path = "../shared" }
 anyhow = "1.0"
+tokio = { version = "1.38", features = ["full"] }
